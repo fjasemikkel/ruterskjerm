@@ -4,15 +4,15 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
-// WiFi-konfigurasjon *** Bytt ut med egne detaljer
-const char* ssid = «SSID»;
-const char* password = «password»;
+// WiFi-konfigurasjon HUSK Å LEGGE INN DINE DETALJER
+const char* ssid = "SSID";
+const char* password = "password";
 
 // API-konfigurasjon
 const char* apiUrl = "https://api.entur.io/journey-planner/v3/graphql";
 
-// GraphQL-spørring (formatert som én streng) BYTT UT 59766 med ditt stoppested (stoppested.entur.org)
-const char* query = "{\"query\":\"{ stopPlace(id: \\\"NSR:StopPlace: 59766\\\») { id name estimatedCalls(timeRange: 72100, numberOfDepartures: 6) { expectedArrivalTime destinationDisplay { frontText } serviceJourney { journeyPattern { line { id } } } } } }\"}";
+// GraphQL-spørring (formatert som én streng) HUSKE Å LEGGE INN DITT STOPPESTED
+const char* query = "{\"query\":\"{ stopPlace(id: \\\"NSR:StopPlace:####\\\") { id name estimatedCalls(timeRange: 72100, numberOfDepartures: 6) { expectedArrivalTime destinationDisplay { frontText } serviceJourney { journeyPattern { line { id } } } } } }\"}";
 
 // TFT-skjermoppsett
 TFT_eSPI tft = TFT_eSPI();
@@ -25,6 +25,8 @@ const int daylightOffset_sec = 3600; // Sommertid
 // Forrige klokkeslett for å unngå flicker
 char lastTimeString[9] = "";
 unsigned long lastUpdateTime = 0; // Tidspunkt for siste oppdatering av avganger
+unsigned long wifiStatusTime = 0; // Tidspunkt for WiFi-status melding
+bool showWifiStatus = true; // For WiFi-status visning
 
 // Funksjon for å hente nåværende tid som struct tm
 tm getCurrentTime() {
@@ -67,15 +69,28 @@ void drawClock() {
   }
 }
 
+void drawWiFiSignal() {
+  int rssi = WiFi.RSSI(); // Hent signalstyrke
+  int strength = map(rssi, -100, -50, 0, 3); // Kartlegg RSSI til nivåer 0-3
+
+  tft.fillRect(220, 300, 20, 20, TFT_BLACK); // Rydd området nederst til høyre
+  for (int i = 0; i <= strength; i++) {
+    tft.fillRect(220 + (i * 5), 280 - (i * 5), 4, (i + 1) * 5, TFT_WHITE); // Tegn søyler
+  }
+}
+
 void drawDepartures(JsonArray estimatedCalls, const char* stopName) {
   tft.fillRect(0, 20, 240, 220, TFT_BLACK); // Oppdater kun dette området
-  tft.setCursor(0, 20); // Start under klokken
+  tft.setCursor(0, 25); // Start under klokken
   tft.setTextFont(2); // Bruk en mindre innebygd font for avgangsdata
   tft.printf("Avganger fra %s:\n", stopName);
 
   int yOffset = 50; // Startpunkt for avgangsdata
+  int lineCount = 0; // Teller antall linjer
 
   for (JsonObject call : estimatedCalls) {
+    if (lineCount >= 5) break; // Begrens til 5 linjer
+
     const char* rawLineId = call["serviceJourney"]["journeyPattern"]["line"]["id"];
     const char* destination = call["destinationDisplay"]["frontText"];
     const char* expectedArrival = call["expectedArrivalTime"];
@@ -88,9 +103,16 @@ void drawDepartures(JsonArray estimatedCalls, const char* stopName) {
     int minutesToDeparture = calculateMinutesToNextDeparture(String(expectedArrival));
 
     // Skriv ut avgangsinformasjon
+    tft.setTextFont(4);
     tft.setCursor(0, yOffset);
-    tft.printf("%-4s %-12s %4d min", lineId.c_str(), destination, minutesToDeparture);
+    tft.printf("%-4s", lineId.c_str());
+    tft.setCursor(50, yOffset);
+    tft.printf("%-12s", destination);
+    tft.setCursor(200, yOffset);
+    tft.printf("%4d min", minutesToDeparture);
+
     yOffset += 30; // Flytt til neste linje
+    lineCount++;
   }
 }
 
@@ -104,6 +126,8 @@ void connectWiFi() {
     delay(500);
     tft.print(".");
   }
+  wifiStatusTime = millis();
+  showWifiStatus = true;
   tft.fillRect(0, 0, 240, 20, TFT_BLACK); // Fjern eventuelle prikker
   tft.setCursor(0, 0);
   tft.println("WiFi tilkoblet!");
@@ -126,9 +150,16 @@ void setup() {
 
 void loop() {
   drawClock();
+  drawWiFiSignal(); // Tegn WiFi-indikator
 
   unsigned long currentTime = millis();
-  if (WiFi.status() == WL_CONNECTED && (currentTime - lastUpdateTime > 30000)) {
+
+  if (showWifiStatus && (currentTime - wifiStatusTime > 5000)) {
+    tft.fillRect(0, 0, 240, 20, TFT_BLACK); // Fjern WiFi-status etter 5 sekunder
+    showWifiStatus = false;
+  }
+
+  if (WiFi.status() == WL_CONNECTED && (currentTime - lastUpdateTime > 20000)) {
     lastUpdateTime = currentTime; // Oppdater tid for siste avgangsforespørsel
 
     HTTPClient http;
